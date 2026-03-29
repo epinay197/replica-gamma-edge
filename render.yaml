@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: replica-gamma-edge
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python gamma_edge.py
+    plan: free
+    envVars:
+      - key: TRADIER_TOKEN
+        sync: false
+      - key: TRADIER_API_BASE
+        value: https://sandbox.tradier.com/v1
