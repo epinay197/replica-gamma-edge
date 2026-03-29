@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GammaEdge GEX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:   #070b10;
+  --s1:   #0a0f17;
+  --s2:   #0e1520;
+  --s3:   #111c28;
+  --b1:   #1c2a3a;
+  --b2:   #243548;
+  --b3:   #2d4060;
+  --t0:   #f0f6ff;
+  --t1:   #c0d0e8;
+  --t2:   #7890b0;
+  --t3:   #415870;
+  --cyan:  #00d4ff;
+  --green: #00e676;
+  --red:   #ff3d6b;
+  --blue:  #448aff;
+  --amber: #ffca28;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Inter', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: var(--bg); }
+body { color: var(--t1); font-family: var(--sans); font-size: 13px; display: flex; flex-direction: column; }
+
+/* TOP BAR */
+#topbar {
+  height: 50px;
+  background: var(--s1);
+  border-bottom: 1px solid var(--b1);
+  display: flex; align-items: center;
+  padding: 0 18px; gap: 16px;
+  flex-shrink: 0; position: relative; z-index: 100;
+}
+#topbar::after {
+  content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--cyan) 35%, var(--blue) 65%, transparent 100%);
+  opacity: .22;
+}
+.logo { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.logo-gamma { font-size: 26px; color: var(--cyan); text-shadow: 0 0 20px rgba(0,212,255,.4); line-height: 1; }
+.logo-text { font-size: 15px; font-weight: 700; color: var(--t0); letter-spacing: .3px; }
+.logo-sub { font-size: 9px; font-weight: 500; letter-spacing: 3px; color: var(--t3); text-transform: uppercase; margin-top: 1px; }
+
+.ticker-form { display: flex; border: 1px solid var(--b2); border-radius: 6px; overflow: hidden; background: var(--s2); }
+#ticker-input { background: transparent; border: none; color: var(--t0); font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: 2px; padding: 0 12px; width: 76px; height: 32px; outline: none; text-transform: uppercase; }
+#ticker-input::placeholder { color: var(--t3); }
+#go-btn { background: var(--cyan); color: #000; font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: 1px; border: none; padding: 0 14px; height: 32px; cursor: pointer; transition: background .15s; }
+#go-btn:hover { background: #33e0ff; }
+
+#spot-box { font-family: var(--mono); font-size: 20px; font-weight: 600; color: var(--cyan); text-shadow: 0 0 20px rgba(0,212,255,.3); letter-spacing: .5px; white-space: nowrap; }
+
+#regime-box { font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: 2px; padding: 5px 14px; border-radius: 4px; white-space: nowrap; text-transform: uppercase; }
+#regime-box.neg  { background: rgba(255,61,107,.12);  color: var(--red);   border: 1px solid rgba(255,61,107,.3);  }
+#regime-box.pos  { background: rgba(0,230,118,.12);   color: var(--green); border: 1px solid rgba(0,230,118,.3);  }
+#regime-box.flip { background: rgba(255,202,40,.12);  color: var(--amber); border: 1px solid rgba(255,202,40,.3); }
+
+.spacer { flex: 1; }
+#status-row { display: flex; align-items: center; gap: 8px; }
+#status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--t3); transition: all .3s; flex-shrink: 0; }
+#status-dot.live    { background: var(--green); box-shadow: 0 0 8px rgba(0,230,118,.6); }
+#status-dot.loading { background: var(--amber); animation: blink 1s infinite; }
+#status-dot.err     { background: var(--red); }
+@keyframes blink { 50%{ opacity:.2; } }
+#status-txt, #refresh-txt { font-size: 11px; color: var(--t2); }
+#refresh-txt { color: var(--t3); }
+#clock-box { font-family: var(--mono); font-size: 11px; color: var(--t3); white-space: nowrap; margin-left: 4px; }
+
+/* MAIN */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* LEFT */
+#left { flex: 1; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid var(--b1); }
+
+#chart-area { height: 195px; flex-shrink: 0; border-bottom: 1px solid var(--b1); position: relative; background: var(--s1); }
+#chart-label { position: absolute; top: 10px; left: 16px; font-size: 9px; font-weight: 600; letter-spacing: 2.5px; color: var(--t3); text-transform: uppercase; z-index: 2; pointer-events: none; }
+#chart-canvas { width: 100%; height: 100%; display: block; }
+
+#table-wrap { flex: 1; overflow-y: auto; overflow-x: hidden; }
+#table-wrap::-webkit-scrollbar { width: 5px; }
+#table-wrap::-webkit-scrollbar-track { background: var(--s1); }
+#table-wrap::-webkit-scrollbar-thumb { background: var(--b2); border-radius: 3px; }
+
+table { width: 100%; border-collapse: collapse; }
+thead { position: sticky; top: 0; z-index: 10; background: var(--s2); box-shadow: 0 1px 0 var(--b1); }
+th { padding: 8px 10px; font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: .8px; color: var(--t3); text-align: right; border-bottom: 1px solid var(--b1); white-space: nowrap; text-transform: uppercase; cursor: pointer; user-select: none; transition: color .12s; }
+th:hover { color: var(--t1); }
+th.sorted { color: var(--cyan); }
+th:first-child { text-align: center; width: 24px; padding: 8px 6px; cursor: default; }
+th:nth-child(2) { text-align: right; min-width: 68px; }
+
+td { padding: 3px 10px; text-align: right; border-bottom: 1px solid rgba(28,42,58,.55); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+td:first-child { text-align: center; padding: 3px 6px; }
+td:nth-child(2) { font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--t1); }
+
+tr { transition: background .05s; }
+tr:hover td { background: rgba(0,212,255,.035) !important; }
+
+tr.atm { box-shadow: inset 3px 0 0 var(--cyan); }
+tr.atm td { background: rgba(0,212,255,.07) !important; }
+tr.atm td:nth-child(2) { color: var(--cyan) !important; text-shadow: 0 0 14px rgba(0,212,255,.5); }
+
+tr.level-call td:nth-child(2)::after { content: ' ▲'; color: var(--blue);  font-size: 9px; opacity: .7; }
+tr.level-put  td:nth-child(2)::after { content: ' ▼'; color: var(--red);   font-size: 9px; opacity: .7; }
+tr.level-flip td:nth-child(2)::after { content: ' ◆'; color: var(--amber); font-size: 9px; opacity: .7; }
+
+.gbar { position: relative; height: 20px; min-width: 100px; }
+.gbar-bg { position: absolute; top: 3px; bottom: 3px; border-radius: 2px; }
+.gbar-txt { position: absolute; top: 50%; transform: translateY(-50%); font-family: var(--mono); font-size: 11px; font-weight: 500; z-index: 1; padding: 0 5px; }
+
+/* RIGHT */
+#right { width: 272px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--s1); overflow: hidden; }
+
+.panel { border-bottom: 1px solid var(--b1); padding: 14px 16px; }
+.panel-title { font-family: var(--sans); font-size: 9px; font-weight: 700; letter-spacing: 2.5px; color: var(--t3); text-transform: uppercase; margin-bottom: 12px; }
+
+#levels-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.level-card { background: var(--s2); border: 1px solid var(--b1); border-radius: 6px; padding: 10px 12px; transition: border-color .2s, box-shadow .2s; }
+.level-name { font-family: var(--sans); font-size: 9px; font-weight: 600; letter-spacing: .8px; color: var(--t3); text-transform: uppercase; margin-bottom: 6px; }
+.level-val { font-family: var(--mono); font-size: 18px; font-weight: 600; line-height: 1; letter-spacing: .5px; }
+
+.gex-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.gex-row:last-child { margin-bottom: 0; }
+.gex-lbl { font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: .5px; width: 40px; flex-shrink: 0; }
+.gex-track { flex: 1; height: 5px; background: var(--s3); border-radius: 3px; overflow: hidden; }
+.gex-fill { height: 100%; border-radius: 3px; transition: width .5s cubic-bezier(.4,0,.2,1); }
+.gex-num { font-family: var(--mono); font-size: 11px; font-weight: 500; width: 64px; text-align: right; flex-shrink: 0; }
+
+.qbtns { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
+.qbtn { font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: .3px; padding: 3px 10px; border: 1px solid var(--b2); border-radius: 4px; background: none; color: var(--t2); cursor: pointer; transition: all .12s; }
+.qbtn:hover { border-color: var(--cyan); color: var(--cyan); background: rgba(0,212,255,.06); }
+
+#chips-wrap { display: flex; flex-wrap: wrap; gap: 4px; max-height: 108px; overflow-y: auto; }
+#chips-wrap::-webkit-scrollbar { width: 3px; }
+#chips-wrap::-webkit-scrollbar-thumb { background: var(--b2); border-radius: 2px; }
+
+.chip { font-family: var(--mono); font-size: 10px; padding: 3px 8px; border: 1px solid var(--b1); border-radius: 4px; color: var(--t3); cursor: pointer; transition: all .1s; white-space: nowrap; }
+.chip:hover { border-color: var(--b3); color: var(--t1); }
+.chip.on { border-color: var(--cyan); color: var(--cyan); background: rgba(0,212,255,.07); }
+.chip.dte0 { border-color: rgba(255,202,40,.35); color: var(--amber); }
+.chip.dte0.on { background: rgba(255,202,40,.08); }
+
+#exp-gex-wrap { flex: 1; overflow-y: auto; padding: 14px 16px; }
+#exp-gex-wrap::-webkit-scrollbar { width: 3px; }
+#exp-gex-wrap::-webkit-scrollbar-thumb { background: var(--b2); border-radius: 2px; }
+.exp-row { margin-bottom: 9px; }
+.exp-row-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+.exp-track { height: 4px; background: var(--s3); border-radius: 2px; overflow: hidden; }
+.exp-fill { height: 100%; border-radius: 2px; transition: width .4s; }
+
+/* OVERLAY */
+#overlay { position: fixed; inset: 0; background: rgba(7,11,16,.93); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; gap: 20px; transition: opacity .3s; backdrop-filter: blur(4px); }
+#overlay.gone { opacity: 0; pointer-events: none; }
+.loader-logo { font-size: 26px; font-weight: 700; color: var(--t0); letter-spacing: 1px; }
+.loader-logo span { color: var(--cyan); text-shadow: 0 0 30px rgba(0,212,255,.5); }
+.loader-bar-wrap { width: 220px; height: 2px; background: var(--b2); border-radius: 2px; overflow: hidden; }
+.loader-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #0099cc, var(--cyan)); border-radius: 2px; animation: loadbar 1.8s ease forwards; }
+@keyframes loadbar { to { width: 85%; } }
+.loader-msg { font-size: 11px; font-weight: 500; color: var(--t3); letter-spacing: 2px; text-transform: uppercase; }
+
+#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(255,61,107,.1); border: 1px solid rgba(255,61,107,.35); color: var(--red); font-size: 11px; padding: 10px 20px; border-radius: 6px; z-index: 2000; display: none; max-width: 500px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div class="loader-logo"><span>Γ</span> GammaEdge</div>
+  <div class="loader-bar-wrap"><div class="loader-bar"></div></div>
+  <div class="loader-msg" id="loader-msg">Connecting…</div>
+</div>
+<div id="toast"></div>
+
+<div id="topbar">
+  <div class="logo">
+    <div class="logo-gamma">Γ</div>
+    <div><div class="logo-text">GammaEdge</div><div class="logo-sub">GEX Dashboard</div></div>
+  </div>
+  <div class="ticker-form">
+    <input id="ticker-input" type="text" value="SPX" maxlength="6" placeholder="SPX" autocomplete="off" spellcheck="false">
+    <button id="go-btn" onclick="loadTicker()">GO</button>
+  </div>
+  <div id="spot-box">—</div>
+  <div id="regime-box" class="neg">—</div>
+  <div class="spacer"></div>
+  <div id="status-row">
+    <div id="status-dot" class="loading"></div>
+    <span id="status-txt">Loading…</span>
+    <span id="refresh-txt"></span>
+  </div>
+  <div id="clock-box">—</div>
+</div>
+
+<div id="main">
+  <div id="left">
+    <div id="chart-area">
+      <div id="chart-label">Net GEX by Strike · ±15% of Spot</div>
+      <canvas id="chart-canvas"></canvas>
+    </div>
+    <div id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th onclick="sortBy('strike')"   id="th-strike">Strike</th>
+            <th onclick="sortBy('net_gex')"  id="th-net_gex"  style="min-width:115px">Net GEX</th>
+            <th onclick="sortBy('call_gex')" id="th-call_gex" style="min-width:100px">Call GEX</th>
+            <th onclick="sortBy('put_gex')"  id="th-put_gex"  style="min-width:100px">Put GEX</th>
+            <th onclick="sortBy('net_oi')"   id="th-net_oi">OI</th>
+            <th onclick="sortBy('call_oi')"  id="th-call_oi">C.OI</th>
+            <th onclick="sortBy('put_oi')"   id="th-put_oi">P.OI</th>
+            <th onclick="sortBy('pct_spot')" id="th-pct_spot">% Spot</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="right">
+    <div class="panel">
+      <div class="panel-title">Key Levels</div>
+      <div id="levels-grid"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">GEX Summary</div>
+      <div id="gex-summary"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Expirations</div>
+      <div class="qbtns">
+        <button class="qbtn" onclick="selAll()">ALL</button>
+        <button class="qbtn" onclick="selNone()">NONE</button>
+        <button class="qbtn" onclick="selDTE(7)">≤7D</button>
+        <button class="qbtn" onclick="selDTE(30)">≤30D</button>
+      </div>
+      <div id="chips-wrap"></div>
+    </div>
+    <div id="exp-gex-wrap">
+      <div class="panel-title">GEX by Expiry</div>
+      <div id="exp-gex-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let D=null, activeExps=new Set(), sortKey2='strike', sortDir2=-1, timer=null, countdown=120;
+
+/* CLOCK */
+function tickClock(){ document.getElementById('clock-box').textContent=new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+tickClock(); setInterval(tickClock,1000);
+
+/* FETCH */
+async function loadTicker(sym){
+  sym=sym||document.getElementById('ticker-input').value.trim().toUpperCase()||'SPX';
+  document.getElementById('ticker-input').value=sym;
+  setStatus('loading','Fetching…');
+  document.getElementById('loader-msg').textContent=`Loading ${sym}…`;
+  const ov=document.getElementById('overlay');
+  ov.style.display='flex'; ov.classList.remove('gone');
+  clearInterval(timer);
+  try{
+    const r=await fetch(`${API}/gex?ticker=${sym}`);
+    const d=await r.json();
+    if(d.error){ toast(d.error); setStatus('err','Error'); return; }
+    D=d; activeExps=new Set(Object.keys(d.expirations));
+    render(); setStatus('live',`${d.elapsed}s · ${d.timestamp.slice(11,16)}`); startCountdown();
+  }catch(e){ toast('Cannot reach backend — is gamma_edge.py running?\n'+e.message); setStatus('err','Offline'); }
+  finally{ ov.classList.add('gone'); setTimeout(()=>{ if(ov.classList.contains('gone')) ov.style.display='none'; },350); }
+}
+
+/* RENDER */
+function render(){ if(!D)return; updateSpot(); updateRegime(); renderLevels(); renderSummary(); renderChips(); renderTable(); renderChart(); renderExpGEX(); }
+
+function updateSpot(){ document.getElementById('spot-box').textContent='$'+D.spot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+function updateRegime(){
+  const el=document.getElementById('regime-box');
+  const tot=D.key_levels.total_gex||0, flip=D.key_levels.gamma_flip;
+  const dist=flip?Math.abs(D.spot-flip)/D.spot*100:999;
+  if(dist<0.5){ el.className='regime-box flip'; el.textContent='◆ NEAR FLIP'; }
+  else if(tot<0){ el.className='regime-box neg'; el.textContent='▼ NEG GAMMA'; }
+  else{ el.className='regime-box pos'; el.textContent='▲ POS GAMMA'; }
+}
+
+function renderLevels(){
+  const kl=D.key_levels;
+  const items=[
+    {name:'Call Wall', val:kl.call_wall,  color:'var(--blue)',  glow:'rgba(68,138,255,.25)'},
+    {name:'Put Wall',  val:kl.put_wall,   color:'var(--red)',   glow:'rgba(255,61,107,.25)'},
+    {name:'Gamma Flip',val:kl.gamma_flip, color:'var(--amber)', glow:'rgba(255,202,40,.25)'},
+    {name:'Max Pain',  val:kl.max_pain,   color:'var(--t2)',    glow:'none'},
+  ];
+  document.getElementById('levels-grid').innerHTML=items.map(i=>`
+    <div class="level-card" style="${i.val?`border-color:${i.glow};box-shadow:0 0 12px ${i.glow}`:''}">
+      <div class="level-name">${i.name}</div>
+      <div class="level-val" style="color:${i.color};${i.val?`text-shadow:0 0 16px ${i.glow}`:''}">
+        ${i.val?i.val.toLocaleString():'—'}
+      </div>
+    </div>`).join('');
+}
+
+function renderSummary(){
+  const st=filteredStrikes();
+  const tot=st.reduce((s,x)=>s+x.net_gex,0), calls=st.reduce((s,x)=>s+x.call_gex,0), puts=st.reduce((s,x)=>s+x.put_gex,0);
+  const mx=Math.max(Math.abs(calls),Math.abs(puts),.001);
+  const rows=[
+    {lbl:'TOTAL',val:tot,   color:tot>=0?'var(--green)':'var(--red)'},
+    {lbl:'CALLS',val:calls, color:'var(--blue)'},
+    {lbl:'PUTS', val:puts,  color:'var(--red)'},
+  ];
+  document.getElementById('gex-summary').innerHTML=rows.map(r=>`
+    <div class="gex-row">
+      <div class="gex-lbl" style="color:${r.color}">${r.lbl}</div>
+      <div class="gex-track"><div class="gex-fill" style="width:${Math.abs(r.val)/mx*100}%;background:${r.color}"></div></div>
+      <div class="gex-num" style="color:${r.color}">${fmtGex(r.val)}</div>
+    </div>`).join('');
+}
+
+function renderChips(){
+  const wrap=document.getElementById('chips-wrap'); wrap.innerHTML='';
+  Object.entries(D.expirations).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([exp,info])=>{
+    const ch=document.createElement('div');
+    const isZ=info.dte===0;
+    ch.className='chip'+(isZ?' dte0':'')+(activeExps.has(exp)?' on':'');
+    ch.textContent=isZ?`0DTE ${exp.slice(5)}`:`${exp.slice(5)} ${info.dte}d`;
+    ch.title=`GEX: ${fmtGex(info.gex)}`;
+    ch.onclick=()=>{ activeExps.has(exp)?activeExps.delete(exp):activeExps.add(exp); render(); };
+    wrap.appendChild(ch);
+  });
+}
+function selAll(){ activeExps=new Set(Object.keys(D.expirations)); render(); }
+function selNone(){ activeExps=new Set(); render(); }
+function selDTE(n){ activeExps=new Set(Object.entries(D.expirations).filter(([,v])=>v.dte<=n).map(([k])=>k)); render(); }
+
+function filteredStrikes(){
+  if(!D) return [];
+  return D.strikes.map(s=>{
+    const exps=Object.entries(s.expirations).filter(([e])=>activeExps.has(e));
+    const net=exps.reduce((sum,[,v])=>sum+v,0);
+    const r=Math.abs(s.net_gex)>0?Math.abs(net)/Math.abs(s.net_gex):0;
+    const ratio=isFinite(r)?r:0;
+    return {...s, net_gex:net, call_gex:s.call_gex*ratio, put_gex:s.put_gex*ratio};
+  }).filter(s=>s.call_oi>0||s.put_oi>0);
+}
+
+function sortBy(key){
+  if(sortKey2===key) sortDir2*=-1; else{ sortKey2=key; sortDir2=key==='strike'?-1:1; }
+  document.querySelectorAll('th[id^="th-"]').forEach(t=>t.classList.remove('sorted'));
+  const el=document.getElementById('th-'+key); if(el) el.classList.add('sorted');
+  renderTable();
+}
+
+function renderTable(){
+  const strikes=filteredStrikes(); if(!strikes.length) return;
+  const spot=D.spot, kl=D.key_levels;
+  const atm=strikes.reduce((b,s)=>Math.abs(s.strike-spot)<Math.abs(b.strike-spot)?s:b,strikes[0]);
+  const maxG=Math.max(...strikes.map(s=>Math.abs(s.net_gex)),.001);
+  const maxCG=Math.max(...strikes.map(s=>Math.abs(s.call_gex)),.001);
+  const maxPG=Math.max(...strikes.map(s=>Math.abs(s.put_gex)),.001);
+
+  const sorted=[...strikes].sort((a,b)=>{
+    const av=a[sortKey2]??0,bv=b[sortKey2]??0;
+    return (av<bv?-1:av>bv?1:0)*sortDir2;
+  });
+
+  const tbody=document.getElementById('tbody');
+  tbody.innerHTML=sorted.map(s=>{
+    const isATM=s.strike===atm?.strike;
+    const gPos=s.net_gex>=0;
+    const gPct=Math.abs(s.net_gex)/maxG*100;
+    const cPct=Math.abs(s.call_gex)/maxCG*100;
+    const pPct=Math.abs(s.put_gex)/maxPG*100;
+    const hasGex=Math.abs(s.net_gex)>0.0001;
+    const dot=!hasGex?'var(--t3)':gPos?'var(--green)':'var(--red)';
+    const dotGlow=hasGex?(gPos?'0 0 6px rgba(0,230,118,.7)':'0 0 6px rgba(255,61,107,.7)'):'none';
+    let cls=isATM?'atm':'';
+    if(s.strike===kl.call_wall)  cls+=' level-call';
+    if(s.strike===kl.put_wall)   cls+=' level-put';
+    if(s.strike===kl.gamma_flip) cls+=' level-flip';
+    const rowBg=!isATM&&gPct>55?`background:rgba(${gPos?'0,230,118':'255,61,107'},.025)`:'';
+    return `<tr class="${cls.trim()}" style="${rowBg}">
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dot};box-shadow:${dotGlow}"></span></td>
+      <td>${s.strike.toLocaleString()}</td>
+      <td><div class="gbar">
+        <div class="gbar-bg" style="background:${gPos?'rgba(0,230,118,.18)':'rgba(255,61,107,.18)'};${gPos?'left:50%':'right:50%'};width:${gPct/2}%"></div>
+        <div class="gbar-txt" style="color:${gPos?'var(--green)':'var(--red)'};${gPos?'right:4px':'left:4px'};font-weight:${gPct>45?600:400}">${fmtGex(s.net_gex)}</div>
+      </div></td>
+      <td><div class="gbar">
+        <div class="gbar-bg" style="background:rgba(68,138,255,.2);left:50%;width:${cPct/2}%"></div>
+        <div class="gbar-txt" style="color:var(--blue);right:4px">${fmtGex(s.call_gex)}</div>
+      </div></td>
+      <td><div class="gbar">
+        <div class="gbar-bg" style="background:rgba(255,61,107,.18);right:50%;width:${pPct/2}%"></div>
+        <div class="gbar-txt" style="color:var(--red);left:4px">${fmtGex(s.put_gex)}</div>
+      </div></td>
+      <td style="color:var(--t2)">${fmtK(s.net_oi)}</td>
+      <td style="color:rgba(68,138,255,.85)">${fmtK(s.call_oi)}</td>
+      <td style="color:rgba(255,61,107,.85)">${fmtK(s.put_oi)}</td>
+      <td style="color:${s.pct_spot>0?'var(--blue)':s.pct_spot<0?'var(--red)':'var(--t3)'}">${s.pct_spot>=0?'+':''}${s.pct_spot.toFixed(2)}%</td>
+    </tr>`;
+  }).join('');
+
+  setTimeout(()=>{ const r=tbody.querySelector('tr.atm'); if(r) r.scrollIntoView({block:'center',behavior:'smooth'}); },60);
+}
+
+function renderChart(){
+  const canvas=document.getElementById('chart-canvas');
+  const W=canvas.offsetWidth, H=canvas.offsetHeight;
+  if(!W||!H) return;
+  canvas.width=W*devicePixelRatio; canvas.height=H*devicePixelRatio;
+  const ctx=canvas.getContext('2d');
+  ctx.scale(devicePixelRatio,devicePixelRatio);
+  ctx.clearRect(0,0,W,H);
+
+  const strikes=filteredStrikes().filter(s=>s.call_oi>0||s.put_oi>0);
+  const spot=D.spot; if(!strikes.length) return;
+  const near=strikes.filter(s=>Math.abs(s.strike/spot-1)<0.15);
+  if(!near.length) return;
+
+  const maxG=Math.max(...near.map(s=>Math.abs(s.net_gex)),.001);
+  const midY=H*0.68, scaleY=(H*0.6)/maxG;
+  const bw=Math.max(3,(W/near.length)*0.7);
+  const kl=D.key_levels;
+  const sr=[near[0].strike, near[near.length-1].strike];
+  const toX=s=>((s-sr[0])/(sr[1]-sr[0]||1))*W;
+
+  // Background
+  ctx.fillStyle='rgba(10,15,23,.6)'; ctx.fillRect(0,0,W,H);
+
+  // Grid lines
+  ctx.strokeStyle='rgba(36,53,72,.6)'; ctx.lineWidth=1;
+  [.25,.5,.75,1].forEach(f=>{
+    const y=midY-maxG*f*scaleY;
+    if(y>20){ ctx.setLineDash([2,8]); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+    const y2=midY+maxG*f*scaleY;
+    if(y2<H-8){ ctx.setLineDash([2,8]); ctx.beginPath(); ctx.moveTo(0,y2); ctx.lineTo(W,y2); ctx.stroke(); }
+  });
+  ctx.setLineDash([]);
+
+  // Zero line
+  ctx.strokeStyle='rgba(100,130,160,.5)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(W,midY); ctx.stroke();
+
+  // Bars
+  near.forEach((s,i)=>{
+    const x=(i/near.length)*W+(W/near.length)/2;
+    const gh=Math.abs(s.net_gex)*scaleY;
+    const step=near[1]?.strike-near[0]?.strike||25;
+    const isSpot=Math.abs(s.strike-spot)<step*0.6;
+    const alpha=isSpot?0.95:0.6;
+
+    if(s.net_gex>=0){
+      const grad=ctx.createLinearGradient(0,midY-gh,0,midY);
+      grad.addColorStop(0,`rgba(0,230,118,${alpha})`);
+      grad.addColorStop(1,`rgba(0,230,118,${alpha*0.25})`);
+      ctx.fillStyle=grad;
+      ctx.fillRect(x-bw/2,midY-gh,bw,gh);
+      if(gh>3){ ctx.fillStyle=`rgba(0,230,118,${alpha})`; ctx.fillRect(x-bw/2,midY-gh,bw,2); }
+    } else {
+      const gh2=Math.min(gh,H-midY-4);
+      const grad=ctx.createLinearGradient(0,midY,0,midY+gh2);
+      grad.addColorStop(0,`rgba(255,61,107,${alpha*0.25})`);
+      grad.addColorStop(1,`rgba(255,61,107,${alpha})`);
+      ctx.fillStyle=grad;
+      ctx.fillRect(x-bw/2,midY,bw,gh2);
+      if(gh2>3){ ctx.fillStyle=`rgba(255,61,107,${alpha})`; ctx.fillRect(x-bw/2,midY+gh2-2,bw,2); }
+    }
+
+    if(isSpot){
+      ctx.strokeStyle='rgba(0,212,255,.8)'; ctx.lineWidth=1.5;
+      ctx.setLineDash([5,4]); ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle='rgba(0,212,255,.8)'; ctx.font='500 9px Inter,sans-serif'; ctx.textAlign='center';
+      ctx.fillText('SPOT',x,H-4);
+    }
+
+    // Strike label on hover-able ticks (every 5th label)
+    if(i%(Math.ceil(near.length/20))===0){
+      ctx.fillStyle='rgba(100,130,160,.5)'; ctx.font='400 8px Inter,sans-serif'; ctx.textAlign='center';
+      ctx.fillText(s.strike.toLocaleString(),x,midY+12);
+    }
+  });
+
+  // Key level lines with labels
+  [[kl.call_wall,'rgba(68,138,255,.8)','CW'],[kl.put_wall,'rgba(255,61,107,.8)','PW'],[kl.gamma_flip,'rgba(255,202,40,.8)','GF']].forEach(([sv,c,lbl])=>{
+    if(!sv||sv<sr[0]||sv>sr[1]) return;
+    const x=toX(sv);
+    ctx.strokeStyle=c; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(x,24); ctx.lineTo(x,H-16); ctx.stroke(); ctx.setLineDash([]);
+    // pill label
+    const pw=22, ph=14;
+    ctx.fillStyle=c.replace('.8',',.12)').replace('rgba','rgba');
+    ctx.strokeStyle=c; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.rect(x-pw/2,6,pw,ph);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle=c; ctx.font='700 9px Inter,sans-serif'; ctx.textAlign='center';
+    ctx.fillText(lbl,x,16);
+  });
+}
+
+function renderExpGEX(){
+  const exps=Object.entries(D.expirations).filter(([e])=>activeExps.has(e)).sort((a,b)=>a[0].localeCompare(b[0]));
+  const mx=Math.max(...exps.map(([,v])=>Math.abs(v.gex)),.001);
+  document.getElementById('exp-gex-list').innerHTML=exps.map(([exp,info])=>{
+    const pct=Math.abs(info.gex)/mx*100;
+    const c=info.gex>=0?'var(--green)':'var(--red)';
+    return `<div class="exp-row">
+      <div class="exp-row-head">
+        <span style="color:var(--t2);font-family:var(--mono);font-size:10px">${exp.slice(5)} <span style="color:var(--t3);font-size:9px">${info.dte}d</span></span>
+        <span style="color:${c};font-family:var(--mono);font-size:10px">${fmtGex(info.gex)}</span>
+      </div>
+      <div class="exp-track"><div class="exp-fill" style="width:${pct}%;background:${c}"></div></div>
+    </div>`;
+  }).join('');
+}
+
+function startCountdown(){
+  clearInterval(timer); countdown=120;
+  timer=setInterval(()=>{
+    countdown--;
+    document.getElementById('refresh-txt').textContent=`· ${countdown}s`;
+    if(countdown<=0) loadTicker(document.getElementById('ticker-input').value);
+  },1000);
+}
+
+function setStatus(type,msg){ document.getElementById('status-dot').className=type; document.getElementById('status-txt').textContent=msg; }
+
+function fmtGex(v){
+  if(v===undefined||v===null||isNaN(v)) return '—';
+  const abs=Math.abs(v), sign=v>=0?'+':'-';
+  if(abs>=1)     return sign+abs.toFixed(2)+'B';
+  if(abs>=0.001) return sign+(abs*1000).toFixed(1)+'M';
+  if(abs>0)      return sign+(abs*1e6).toFixed(0)+'K';
+  return '0';
+}
+function fmtK(n){ n=+n; if(!n||isNaN(n))return'—'; if(Math.abs(n)>=1e6)return(n/1e6).toFixed(1)+'M'; if(Math.abs(n)>=1e3)return(n/1e3).toFixed(1)+'K'; return n.toFixed(0); }
+function toast(msg){ const el=document.getElementById('toast'); el.textContent=msg; el.style.display='block'; setTimeout(()=>{ el.style.display='none'; },8000); }
+
+window.addEventListener('resize',()=>{ if(D) renderChart(); });
+document.getElementById('ticker-input').addEventListener('keydown',e=>{ if(e.key==='Enter') loadTicker(); });
+loadTicker('SPX');
+</script>
+</body>
+</html>
