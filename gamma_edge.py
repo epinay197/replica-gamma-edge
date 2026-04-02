@@ -1,12 +1,13 @@
 """
-GammaEdge GEX Dashboard -- Tradier Production (Tastytrade Fallback)
-====================================================================
+GammaEdge GEX Dashboard -- Tradier Production (Tastytrade + Massive Fallback)
+==============================================================================
 Run:  python gamma_edge.py
 Open: dashboard.html
 
 Data sources:
-  Primary:  Tradier (spot, expirations, full option chains with greeks)
-  Fallback: Tastytrade / dxFeed (used automatically when Tradier fails)
+  Primary:    Tradier (spot, expirations, full option chains with greeks)
+  Fallback 1: Tastytrade / dxFeed (used automatically when Tradier fails)
+  Fallback 2: Massive.com (used automatically when both Tradier and Tastytrade fail)
 """
 
 import os, sys, json, time, math, threading, http.server, socketserver, traceback
@@ -33,6 +34,9 @@ MAX_EXPIRIES = 20
 MAX_WORKERS  = 8
 INDEX_ROOTS  = {"SPX","SPXW","NDX","NDXW","VIX","RUT","RUTW","XSP","MXEA","MXEF"}
 HTML_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+
+# Massive API constants
+MASSIVE_API_BASE   = os.environ.get("MASSIVE_API_BASE", "https://api.massive.com")
 
 # Tastytrade API constants
 TT_API_BASE        = "https://api.tastytrade.com"
@@ -62,6 +66,13 @@ def get_token():
         print("\n[WARN] No valid TRADIER_TOKEN found -- will rely on Tastytrade fallback.\n")
         return None
     return token
+
+def get_massive_key():
+    """Load Massive API key from env vars or credentials.env."""
+    key = os.environ.get("MASSIVE_API_KEY", "").strip()
+    if not key:
+        key = load_creds().get("MASSIVE_API_KEY", "").strip()
+    return key or None
 
 def get_default_ticker():
     return load_creds().get("TICKER","SPX").strip().upper()
@@ -734,6 +745,257 @@ def fetch_gex_tastytrade(ticker):
     }
 
 
+# ══════════════════════════════════════════════════════════════════
+# MASSIVE.COM FALLBACK (third tier)
+# ══════════════════════════════════════════════════════════════════
+
+def _massive_hdr():
+    """Return auth header for Massive API."""
+    key = get_massive_key()
+    if not key:
+        raise RuntimeError("[Massive] No MASSIVE_API_KEY configured")
+    return {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+
+
+def get_spot_massive(ticker):
+    """
+    Fetch spot price for `ticker` via Massive last-trade endpoint.
+    GET /v2/last/trade/{ticker} -> results.p
+    Returns float or None.
+    """
+    sym = ticker.upper()
+    print(f"  [Massive/spot] Fetching last trade for {sym}")
+    try:
+        r = requests.get(
+            f"{MASSIVE_API_BASE}/v2/last/trade/{sym}",
+            headers=_massive_hdr(),
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"  [Massive/spot] HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        data = r.json()
+        results = data.get("results", {})
+        price = results.get("p")
+        if price is not None:
+            price = float(price)
+            if price > 0:
+                print(f"  [Massive/spot] {sym} = ${price:,.2f}")
+                return price
+        print(f"  [Massive/spot] No valid price in response for {sym}")
+        return None
+    except Exception as e:
+        print(f"  [Massive/spot] Exception: {e}")
+        return None
+
+
+def get_chain_massive(ticker, expiration):
+    """
+    Fetch options chain snapshot for (ticker, expiration) via Massive API.
+    GET /v3/snapshot/options/{ticker}?expiration_date=YYYY-MM-DD&limit=250
+    Follows next_url for pagination.
+
+    Returns list of contract dicts in the same format expected by compute_gex():
+      {
+        "strike":          float,
+        "option_type":     "call" | "put",
+        "expiration_date": "YYYY-MM-DD",
+        "contract_size":   100,
+        "open_interest":   int,
+        "greeks": {
+            "gamma":  float,
+            "delta":  float,
+            "mid_iv": float,
+        }
+      }
+    """
+    sym = ticker.upper()
+    print(f"  [Massive/chain] Fetching {sym} {expiration}")
+    try:
+        headers = _massive_hdr()
+        url = f"{MASSIVE_API_BASE}/v3/snapshot/options/{sym}"
+        params = {"expiration_date": expiration, "limit": 250}
+        all_results = []
+
+        while url:
+            r = requests.get(url, headers=headers, params=params, timeout=20)
+            if r.status_code != 200:
+                print(f"  [Massive/chain] HTTP {r.status_code}: {r.text[:200]}")
+                break
+            data = r.json()
+            results = data.get("results", [])
+            all_results.extend(results)
+
+            # Pagination: follow next_url if present
+            next_url = data.get("next_url")
+            if next_url:
+                url = next_url
+                params = {}  # next_url includes query params already
+            else:
+                url = None
+
+        # Convert to standard contract format
+        contracts = []
+        for item in all_results:
+            details = item.get("details", {})
+            greeks  = item.get("greeks", {})
+
+            strike     = details.get("strike_price")
+            exp_date   = details.get("expiration_date")
+            ctype_raw  = (details.get("contract_type") or "").lower()
+            oi         = item.get("open_interest") or 0
+            iv         = item.get("implied_volatility")
+
+            if not strike or ctype_raw not in ("call", "put"):
+                continue
+
+            gamma_val = greeks.get("gamma")
+            delta_val = greeks.get("delta")
+
+            contracts.append({
+                "strike":          float(strike),
+                "option_type":     ctype_raw,
+                "expiration_date": exp_date or expiration,
+                "contract_size":   100,
+                "open_interest":   int(oi),
+                "greeks": {
+                    "gamma":  float(gamma_val) if gamma_val is not None else None,
+                    "delta":  float(delta_val) if delta_val is not None else None,
+                    "mid_iv": float(iv) if iv is not None else None,
+                },
+            })
+
+        filled = sum(1 for c in contracts if c["greeks"]["gamma"] is not None)
+        print(f"  [Massive/chain] {sym} {expiration}: {len(contracts)} contracts, "
+              f"{filled} with greeks, total OI={sum(c['open_interest'] for c in contracts):,}")
+        return contracts
+
+    except Exception as e:
+        traceback.print_exc()
+        print(f"  [Massive/chain] Exception for {sym} {expiration}: {e}")
+        return []
+
+
+def _get_expirations_massive(ticker):
+    """
+    Derive available expirations from a Massive options snapshot.
+    We fetch a broad snapshot (no expiration filter) and collect unique expiration dates.
+    Returns sorted list of 'YYYY-MM-DD' strings >= today.
+    """
+    sym = ticker.upper()
+    print(f"  [Massive/exp] Fetching expirations for {sym}")
+    try:
+        headers = _massive_hdr()
+        url = f"{MASSIVE_API_BASE}/v3/snapshot/options/{sym}"
+        params = {"limit": 250}
+        exps = set()
+
+        # Fetch first page(s) to discover expirations
+        pages = 0
+        while url and pages < 5:
+            r = requests.get(url, headers=headers, params=params, timeout=20)
+            if r.status_code != 200:
+                print(f"  [Massive/exp] HTTP {r.status_code}: {r.text[:200]}")
+                break
+            data = r.json()
+            for item in data.get("results", []):
+                details = item.get("details", {})
+                exp = details.get("expiration_date")
+                if exp:
+                    exps.add(exp)
+            next_url = data.get("next_url")
+            if next_url:
+                url = next_url
+                params = {}
+            else:
+                url = None
+            pages += 1
+
+        today = date.today().isoformat()
+        result = sorted(e for e in exps if e >= today)
+        print(f"  [Massive/exp] Found {len(result)} expirations for {sym}")
+        return result
+
+    except Exception as e:
+        print(f"  [Massive/exp] Exception: {e}")
+        return []
+
+
+def fetch_gex_massive(ticker):
+    """
+    Full GEX data fetch using Massive.com as the data source.
+    Returns the same structure as fetch_gex() so the rest of the pipeline
+    (compute_gex, key_levels, HTTP handler) works unchanged.
+    """
+    ticker = ticker.upper().strip()
+    t0     = time.time()
+    print(f"\n{'='*55}")
+    print(f"[GammaEdge/Massive] Fetching {ticker} via Massive.com...")
+    print(f"{'='*55}")
+
+    # Spot price
+    spot = get_spot_massive(ticker)
+    if spot is None:
+        return {"error": f"[Massive] Cannot fetch spot price for {ticker}"}
+    print(f"  Spot: ${spot:,.2f}")
+
+    # Expirations
+    exps = _get_expirations_massive(ticker)
+    if not exps and ticker == "SPX":
+        print("  [Massive/exp] No SPX exps, trying SPXW...")
+        exps = _get_expirations_massive("SPXW")
+    if not exps:
+        return {"error": f"[Massive] No expirations found for {ticker}"}
+    print(f"  Expirations: {len(exps)} -- first: {exps[0]}, last: {exps[-1]}")
+
+    exps = exps[:MAX_EXPIRIES]
+
+    # Option chains
+    all_contracts = []
+    syms = [ticker] + (["SPXW"] if ticker == "SPX" else [])
+    print(f"  Fetching chains for: {syms} x {len(exps)} expirations...")
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(get_chain_massive, sym, exp): (sym, exp)
+                for sym in syms for exp in exps}
+        for f in as_completed(futs):
+            all_contracts.extend(f.result())
+
+    print(f"  Raw contracts returned: {len(all_contracts):,}")
+
+    if not all_contracts:
+        return {"error": "[Massive] No option contracts returned from Massive"}
+
+    # GEX computation (unchanged -- same contract format)
+    strikes = compute_gex(all_contracts, spot, ticker)
+    kl      = key_levels(strikes, spot)
+
+    # Summary by expiry
+    exp_summary = {}
+    for s in strikes:
+        for exp, gex in s["expirations"].items():
+            if exp not in exp_summary:
+                exp_summary[exp] = {"gex": 0, "dte": dte(exp)}
+            exp_summary[exp]["gex"] += gex
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"  Done in {elapsed}s -- {len(strikes)} strikes, "
+          f"call_wall={kl.get('call_wall')}, put_wall={kl.get('put_wall')}, "
+          f"total_gex={kl.get('total_gex')}")
+
+    return {
+        "ticker":      ticker,
+        "spot":        spot,
+        "strikes":     strikes,
+        "key_levels":  kl,
+        "expirations": {k: {"gex": round(v["gex"], 3), "dte": v["dte"]}
+                        for k, v in sorted(exp_summary.items())},
+        "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "elapsed":     elapsed,
+        "data_source": "massive",
+    }
+
+
 # ── Black-Scholes gamma ──────────────────────────────────────────
 def _npdf(x): return math.exp(-0.5*x*x) / math.sqrt(2*math.pi)
 
@@ -949,14 +1211,14 @@ def fetch_gex(token, ticker):
 def fetch_gex_with_fallback(token, ticker):
     """
     Try Tradier first. If it fails for any reason (bad token, HTTP error,
-    empty result, exception), fall back to Tastytrade automatically.
+    empty result, exception), fall back to Tastytrade. If Tastytrade also
+    fails, fall back to Massive.com as third tier.
     """
     tradier_ok = token is not None
 
     if tradier_ok:
         try:
             result = fetch_gex(token, ticker)
-            # Treat any error dict that doesn't scream "no contracts" as Tradier working
             if "error" not in result:
                 return result
             print(f"\n[GammaEdge] Tradier returned error: {result['error']}")
@@ -967,13 +1229,24 @@ def fetch_gex_with_fallback(token, ticker):
     else:
         print("[GammaEdge] No Tradier token -- using Tastytrade directly\n")
 
-    # Tastytrade fallback
+    # Tastytrade fallback (second tier)
     try:
-        return fetch_gex_tastytrade(ticker)
+        result = fetch_gex_tastytrade(ticker)
+        if "error" not in result:
+            return result
+        print(f"\n[GammaEdge] Tastytrade returned error: {result.get('error')}")
+        print("[GammaEdge] Switching to Massive fallback...\n")
+    except Exception as e:
+        print(f"\n[GammaEdge] Tastytrade fallback raised exception: {e}")
+        print("[GammaEdge] Switching to Massive fallback...\n")
+
+    # Massive fallback (third tier)
+    try:
+        return fetch_gex_massive(ticker)
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[ERROR] Tastytrade fallback also failed:\n{tb}")
-        return {"error": f"Both Tradier and Tastytrade failed. Last error: {e}"}
+        print(f"[ERROR] Massive fallback also failed:\n{tb}")
+        return {"error": f"All data sources failed (Tradier, Tastytrade, Massive). Last error: {e}"}
 
 
 # ── Cache + HTTP server ──────────────────────────────────────────
@@ -1065,7 +1338,7 @@ def run_server(token, ticker):
         src = "Tradier" if token else "Tastytrade (no Tradier token)"
         print(f"\n{sep}")
         print(f"  GammaEdge is RUNNING")
-        print(f"  Data source: {src} (Tastytrade fallback enabled)")
+        print(f"  Data source: {src} (Tastytrade + Massive fallback enabled)")
         print(f"  Dashboard: http://localhost:{PORT}/")
         print(f"  GEX API:   http://localhost:{PORT}/gex?ticker=SPX")
         print(f"  Health:    http://localhost:{PORT}/health")

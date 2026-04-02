@@ -16,3 +16,5 @@ services:
         sync: false
       - key: TT_REFRESH_TOKEN
         sync: false
+      - key: MASSIVE_API_KEY
+        sync: false
