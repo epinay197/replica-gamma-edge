@@ -10,3 +10,9 @@ services:
         sync: false
       - key: TRADIER_API_BASE
         value: https://sandbox.tradier.com/v1
+      - key: TT_CLIENT_ID
+        sync: false
+      - key: TT_CLIENT_SECRET
+        sync: false
+      - key: TT_REFRESH_TOKEN
+        sync: false

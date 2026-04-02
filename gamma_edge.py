@@ -1,8 +1,12 @@
 """
-GammaEdge GEX Dashboard — Tradier Production
-=============================================
+GammaEdge GEX Dashboard -- Tradier Production (Tastytrade Fallback)
+====================================================================
 Run:  python gamma_edge.py
 Open: dashboard.html
+
+Data sources:
+  Primary:  Tradier (spot, expirations, full option chains with greeks)
+  Fallback: Tastytrade / dxFeed (used automatically when Tradier fails)
 """
 
 import os, sys, json, time, math, threading, http.server, socketserver, traceback
@@ -15,6 +19,12 @@ except ImportError:
     print("\n[ERROR] 'requests' not installed.  Fix: pip install requests\n")
     sys.exit(1)
 
+try:
+    import websocket
+except ImportError:
+    print("\n[ERROR] 'websocket-client' not installed.  Fix: pip install websocket-client\n")
+    sys.exit(1)
+
 # ── Config ──────────────────────────────────────────────────────
 CREDS_FILE   = os.path.join(os.path.dirname(__file__), "credentials.env")
 API_BASE     = os.environ.get("TRADIER_API_BASE", "https://sandbox.tradier.com/v1")
@@ -23,6 +33,12 @@ MAX_EXPIRIES = 20
 MAX_WORKERS  = 8
 INDEX_ROOTS  = {"SPX","SPXW","NDX","NDXW","VIX","RUT","RUTW","XSP","MXEA","MXEF"}
 HTML_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+
+# Tastytrade API constants
+TT_API_BASE        = "https://api.tastytrade.com"
+TT_DXFEED_WS       = "wss://tasty-openapi-ws.dxfeed.com/realtime"
+TT_ACCESS_TTL      = 14 * 60        # 15 min expiry, refresh at 14 min
+TT_STREAMER_TTL    = 20 * 3600      # streamer token valid ~24h, cache 20h
 
 # ── Credentials ──────────────────────────────────────────────────
 def load_creds():
@@ -43,8 +59,8 @@ def get_token():
     if not token:
         token = load_creds().get("TRADIER_TOKEN", "").strip()
     if not token or token.startswith("YOUR_TOKEN"):
-        print("\n[ERROR] No TRADIER_TOKEN found. Set env var TRADIER_TOKEN or add to credentials.env\n")
-        sys.exit(1)
+        print("\n[WARN] No valid TRADIER_TOKEN found -- will rely on Tastytrade fallback.\n")
+        return None
     return token
 
 def get_default_ticker():
@@ -82,7 +98,7 @@ def get_spot(token, symbol):
 
     # ── All symbols: derive ATM from option chain strikes ─────────
     # The sandbox underlying field is unreliable (~117 for SPX).
-    # Instead, we find the strike with highest total OI — that cluster
+    # Instead, we find the strike with highest total OI -- that cluster
     # sits right around the true current spot level.
     roots = ["SPXW", "SPX"] if sym in ("SPX","SPXW") else [sym]
     for root in roots:
@@ -90,12 +106,12 @@ def get_spot(token, symbol):
             exps = get_expirations(token, root)
             if not exps:
                 continue
-            # Use nearest expiry — has the most meaningful OI clustering
+            # Use nearest expiry -- has the most meaningful OI clustering
             r = requests.get(f"{API_BASE}/markets/options/chains",
                 headers=_hdr(token),
                 params={"symbol": root, "expiration": exps[0], "greeks": "true"},
                 timeout=15)
-            print(f"  [spot] chain/{root}/{exps[0]} → {r.status_code}")
+            print(f"  [spot] chain/{root}/{exps[0]} -> {r.status_code}")
             if r.status_code != 200:
                 continue
             opts  = r.json().get("options") or {}
@@ -108,7 +124,7 @@ def get_spot(token, symbol):
             print(f"  [spot] {root} first contract keys: {list(chain[0].keys())}")
             print(f"  [spot] {root} first contract underlying={chain[0].get('underlying')} last={chain[0].get('last')} close={chain[0].get('close')}")
 
-            # Method A: 'underlying' field — Tradier puts current price here on production,
+            # Method A: 'underlying' field -- Tradier puts current price here on production,
             # symbol string on sandbox. Try to parse it as a number.
             for c in chain:
                 for field in ("underlying", "underlying_price"):
@@ -117,7 +133,7 @@ def get_spot(token, symbol):
                         try:
                             p = float(val)
                             if 500 < p < 100000:   # must look like a real index price
-                                print(f"  [spot] {root} {field}={p:,.2f} ✓")
+                                print(f"  [spot] {root} {field}={p:,.2f} OK")
                                 return p
                             else:
                                 print(f"  [spot] {root} {field}={val} (not a valid price, skipping)")
@@ -126,7 +142,7 @@ def get_spot(token, symbol):
                             print(f"  [spot] {root} {field}='{val}' (string, not a price)")
                             break  # same value for all contracts, no need to loop
 
-            # Method B: weighted average of strikes by OI — clusters around spot
+            # Method B: weighted average of strikes by OI -- clusters around spot
             oi_by_strike = {}
             for c in chain:
                 st = c.get("strike")
@@ -137,7 +153,7 @@ def get_spot(token, symbol):
             if oi_by_strike:
                 total_oi = sum(oi_by_strike.values())
                 if total_oi > 0:
-                    # Weighted average strike by OI — good approximation of spot
+                    # Weighted average strike by OI -- good approximation of spot
                     wt_avg = sum(k * v for k, v in oi_by_strike.items()) / total_oi
                     if wt_avg > 500:
                         print(f"  [spot] {root} OI-weighted avg strike = ${wt_avg:,.2f}")
@@ -184,15 +200,538 @@ def get_chain(token, symbol, expiry):
             params={"symbol": symbol, "expiration": expiry, "greeks": "true"},
             timeout=20)
         if r.status_code != 200:
-            print(f"  [chain] {symbol} {expiry} → HTTP {r.status_code}")
+            print(f"  [chain] {symbol} {expiry} -> HTTP {r.status_code}")
             return []
         opts = r.json().get("options") or {}
         chain = opts.get("option", [])
         if chain is None: return []
         return [chain] if isinstance(chain, dict) else chain
     except Exception as e:
-        print(f"  [chain] {symbol} {expiry} → {e}")
+        print(f"  [chain] {symbol} {expiry} -> {e}")
         return []
+
+
+# ══════════════════════════════════════════════════════════════════
+# TASTYTRADE FALLBACK
+# ══════════════════════════════════════════════════════════════════
+
+# Token cache (module-level, thread-safe via lock)
+_tt_lock           = threading.Lock()
+_tt_access_token   = None
+_tt_access_ts      = 0.0
+_tt_streamer_token = None
+_tt_streamer_ts    = 0.0
+
+
+def _get_tt_creds():
+    """Load Tastytrade credentials from env vars or credentials.env."""
+    creds = load_creds()
+    client_id     = os.environ.get("TT_CLIENT_ID",     creds.get("TT_CLIENT_ID",     "")).strip()
+    client_secret = os.environ.get("TT_CLIENT_SECRET", creds.get("TT_CLIENT_SECRET", "")).strip()
+    refresh_token = os.environ.get("TT_REFRESH_TOKEN", creds.get("TT_REFRESH_TOKEN", "")).strip()
+    return client_id, client_secret, refresh_token
+
+
+def _tt_get_access_token():
+    """Return a valid Tastytrade OAuth access token, refreshing if expired."""
+    global _tt_access_token, _tt_access_ts
+    with _tt_lock:
+        now = time.time()
+        if _tt_access_token and (now - _tt_access_ts) < TT_ACCESS_TTL:
+            return _tt_access_token
+
+        client_id, client_secret, refresh_token = _get_tt_creds()
+        if not (client_id and client_secret and refresh_token):
+            raise RuntimeError("[TT] Tastytrade credentials not configured")
+
+        resp = requests.post(
+            f"{TT_API_BASE}/oauth/token",
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"[TT] OAuth token refresh failed: {resp.status_code} {resp.text[:300]}")
+
+        _tt_access_token = resp.json()["access_token"]
+        _tt_access_ts    = now
+        print("[TT] OAuth access token refreshed OK")
+        return _tt_access_token
+
+
+def _tt_get_streamer_token():
+    """Return a valid dxFeed streamer token, refreshing if expired."""
+    global _tt_streamer_token, _tt_streamer_ts
+    with _tt_lock:
+        now = time.time()
+        if _tt_streamer_token and (now - _tt_streamer_ts) < TT_STREAMER_TTL:
+            return _tt_streamer_token
+
+        access = _tt_get_access_token()
+        resp = requests.get(
+            f"{TT_API_BASE}/api-quote-tokens",
+            headers={"Authorization": f"Bearer {access}", "Accept": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"[TT] Streamer token fetch failed: {resp.status_code} {resp.text[:300]}")
+
+        _tt_streamer_token = resp.json()["data"]["token"]
+        _tt_streamer_ts    = now
+        print("[TT] dxFeed streamer token refreshed OK")
+        return _tt_streamer_token
+
+
+# ── dxFeed WebSocket helpers ──────────────────────────────────────
+
+def _dxfeed_fetch(streamer_token, subscriptions, timeout=20):
+    """
+    Open a dxFeed WebSocket, subscribe to `subscriptions`, collect all
+    messages until no new data arrives for `timeout` seconds, then return
+    a dict keyed by event-type -> symbol -> {field: value}.
+
+    subscriptions: list of {"type": "Greeks", "symbol": [".SPXW241220C4500"]}
+    """
+    collected = {}   # {event_type: {symbol: {field: value}}}
+    done      = threading.Event()
+    last_msg  = [time.time()]
+
+    def on_message(ws, message):
+        last_msg[0] = time.time()
+        try:
+            data = json.loads(message)
+        except Exception:
+            return
+
+        # dxFeed feed messages look like:
+        # {"type":"Greeks","eventSymbol":".SPXW241220C4500","gamma":0.001,...}
+        # or wrapped in {"channel":1,"type":"DATA","data":[...]}
+        events = []
+        if isinstance(data, list):
+            events = data
+        elif isinstance(data, dict):
+            if data.get("type") == "DATA" and isinstance(data.get("data"), list):
+                events = data["data"]
+            else:
+                events = [data]
+
+        for ev in events:
+            if not isinstance(ev, dict): continue
+            etype  = ev.get("eventType") or ev.get("type")
+            symbol = ev.get("eventSymbol") or ev.get("symbol")
+            if not etype or not symbol: continue
+            if etype not in collected:
+                collected[etype] = {}
+            if symbol not in collected[etype]:
+                collected[etype][symbol] = {}
+            collected[etype][symbol].update(ev)
+
+    def on_error(ws, error):
+        print(f"[TT/dxFeed] WS error: {error}")
+
+    def on_close(ws, code, msg):
+        done.set()
+
+    def on_open(ws):
+        # dxFeed FEED setup sequence
+        # 1. SETUP
+        ws.send(json.dumps({"type": "SETUP", "channel": 0, "keepaliveTimeout": 60,
+                             "acceptKeepaliveTimeout": 60, "version": "0.1"}))
+        # 2. AUTH
+        ws.send(json.dumps({"type": "AUTH", "channel": 0, "token": streamer_token}))
+        # 3. Open a data channel
+        ws.send(json.dumps({"type": "CHANNEL_REQUEST", "channel": 1,
+                             "service": "FEED", "parameters": {"contract": "AUTO"}}))
+        # 4. FEED_SETUP on channel 1
+        feed_setup = {
+            "type":         "FEED_SETUP",
+            "channel":      1,
+            "acceptAggregationPeriod": 0,
+            "acceptDataFormat":        "FULL",
+            "acceptEventFields":       {
+                "Greeks":  ["eventType","eventSymbol","volatility","delta","gamma",
+                            "theta","rho","vega"],
+                "Summary": ["eventType","eventSymbol","openInterest","dayOpenInterest"],
+                "Trade":   ["eventType","eventSymbol","price","dayVolume"],
+                "Quote":   ["eventType","eventSymbol","bidPrice","askPrice"],
+            }
+        }
+        ws.send(json.dumps(feed_setup))
+        # 5. FEED_SUBSCRIPTION
+        ws.send(json.dumps({
+            "type":          "FEED_SUBSCRIPTION",
+            "channel":       1,
+            "reset":         True,
+            "add":           subscriptions,
+        }))
+
+    ws_app = websocket.WebSocketApp(
+        TT_DXFEED_WS,
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+
+    t = threading.Thread(target=ws_app.run_forever, daemon=True)
+    t.start()
+
+    # Wait until silence for `timeout` seconds
+    deadline = time.time() + timeout + 5   # hard outer cap
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if done.is_set():
+            break
+        if (time.time() - last_msg[0]) >= timeout:
+            break
+
+    ws_app.close()
+    return collected
+
+
+# ── Tastytrade public data functions ──────────────────────────────
+
+def get_spot_tastytrade(symbol):
+    """
+    Fetch spot price for `symbol` via dxFeed WebSocket (Trade/Quote event).
+    Returns float or None.
+    """
+    sym = symbol.upper()
+    # Map option-root symbols to their underlying dxFeed ticker
+    dx_map = {
+        "SPX": "$SPX.X", "SPXW": "$SPX.X",
+        "NDX": "$NDX.X", "NDXW": "$NDX.X",
+        "RUT": "$RUT.X", "RUTW": "$RUT.X",
+        "VIX": "$VIX.X",
+    }
+    dx_sym = dx_map.get(sym, sym)
+
+    print(f"  [TT/spot] Fetching via dxFeed: {dx_sym}")
+    try:
+        streamer = _tt_get_streamer_token()
+        subs = [
+            {"type": "Trade", "symbol": [dx_sym]},
+            {"type": "Quote", "symbol": [dx_sym]},
+        ]
+        data = _dxfeed_fetch(streamer, subs, timeout=10)
+
+        # Prefer Trade.price, fallback to Quote mid
+        trade = (data.get("Trade") or {}).get(dx_sym, {})
+        quote = (data.get("Quote") or {}).get(dx_sym, {})
+
+        price = None
+        t_price = trade.get("price")
+        if t_price and float(t_price) > 10:
+            price = float(t_price)
+        else:
+            bid = quote.get("bidPrice")
+            ask = quote.get("askPrice")
+            if bid and ask and float(bid) > 0 and float(ask) > 0:
+                price = (float(bid) + float(ask)) / 2
+
+        if price:
+            print(f"  [TT/spot] {dx_sym} = ${price:,.2f}")
+        else:
+            print(f"  [TT/spot] No price received for {dx_sym}")
+        return price
+
+    except Exception as e:
+        print(f"  [TT/spot] Exception: {e}")
+        return None
+
+
+def get_expirations_tastytrade(symbol):
+    """
+    Fetch option expirations for `symbol` via Tastytrade REST API.
+    Returns sorted list of 'YYYY-MM-DD' strings >= today.
+    """
+    sym = symbol.upper()
+    print(f"  [TT/exp] Fetching expirations for {sym}")
+    try:
+        access = _tt_get_access_token()
+        # Tastytrade uses '/SPXW' prefix for index options
+        tt_sym = f"/{sym}" if sym in INDEX_ROOTS else sym
+
+        resp = requests.get(
+            f"{TT_API_BASE}/instruments/equity-options",
+            headers={"Authorization": f"Bearer {access}", "Accept": "application/json"},
+            params={"symbol[]": tt_sym, "active": "true"},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            print(f"  [TT/exp] HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        items = resp.json().get("data", {}).get("items", [])
+        today = date.today().isoformat()
+        exps  = set()
+        for item in items:
+            exp = item.get("expiration-date")
+            if exp and exp >= today:
+                exps.add(exp)
+
+        result = sorted(exps)
+        print(f"  [TT/exp] Found {len(result)} expirations for {sym}")
+        return result
+
+    except Exception as e:
+        print(f"  [TT/exp] Exception: {e}")
+        return []
+
+
+def _build_option_symbol_dxfeed(root, expiry, otype, strike):
+    """
+    Build a dxFeed option symbol string.
+    Format: .{ROOT}{YY}{MM}{DD}{C|P}{strike_integer}
+    Example: .SPXW241220C4500
+    """
+    dt   = datetime.strptime(expiry, "%Y-%m-%d")
+    yy   = dt.strftime("%y")
+    mm   = dt.strftime("%m")
+    dd   = dt.strftime("%d")
+    cp   = "C" if otype.lower() == "call" else "P"
+    # Strike: no decimal if whole number, else include decimal
+    s    = float(strike)
+    s_str = str(int(s)) if s == int(s) else str(s)
+    return f".{root}{yy}{mm}{dd}{cp}{s_str}"
+
+
+def get_chain_tastytrade(symbol, expiry):
+    """
+    Fetch a full option chain for (symbol, expiry) via Tastytrade REST for
+    contract metadata + dxFeed WebSocket for greeks and OI.
+
+    Returns a list of contract dicts in the same format expected by compute_gex():
+      {
+        "strike":          float,
+        "option_type":     "call" | "put",
+        "expiration_date": "YYYY-MM-DD",
+        "contract_size":   100,
+        "open_interest":   int,
+        "greeks": {
+            "gamma":  float,
+            "delta":  float,
+            "mid_iv": float,
+        }
+      }
+    """
+    sym = symbol.upper()
+    tt_sym = f"/{sym}" if sym in INDEX_ROOTS else sym
+
+    print(f"  [TT/chain] Fetching {sym} {expiry}")
+    try:
+        access = _tt_get_access_token()
+
+        # Step 1: Get option symbols for this expiry from REST
+        resp = requests.get(
+            f"{TT_API_BASE}/instruments/equity-options",
+            headers={"Authorization": f"Bearer {access}", "Accept": "application/json"},
+            params={"symbol[]": tt_sym, "expiration-date": expiry, "active": "true"},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            print(f"  [TT/chain] REST {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        items = resp.json().get("data", {}).get("items", [])
+        if not items:
+            print(f"  [TT/chain] No contracts from REST for {sym} {expiry}")
+            return []
+
+        # Build map: dxfeed_symbol -> contract_info
+        contracts_meta = {}
+        dx_symbols     = []
+        for item in items:
+            dx_sym = item.get("streamer-symbol")
+            if not dx_sym:
+                # Build it manually as fallback
+                strike = item.get("strike-price") or item.get("strike")
+                otype  = item.get("option-type", "").lower()
+                if strike and otype in ("call", "put"):
+                    root_key = sym.replace("/", "")
+                    dx_sym = _build_option_symbol_dxfeed(root_key, expiry, otype, strike)
+                else:
+                    continue
+
+            strike = float(item.get("strike-price") or item.get("strike") or 0)
+            otype  = (item.get("option-type") or "").lower()
+            if not strike or otype not in ("call", "put"):
+                continue
+
+            contracts_meta[dx_sym] = {
+                "strike":          strike,
+                "option_type":     otype,
+                "expiration_date": expiry,
+                "contract_size":   100,
+            }
+            dx_symbols.append(dx_sym)
+
+        if not dx_symbols:
+            print(f"  [TT/chain] No valid dxFeed symbols for {sym} {expiry}")
+            return []
+
+        print(f"  [TT/chain] Subscribing to {len(dx_symbols)} dxFeed symbols for {sym} {expiry}")
+
+        # Step 2: Fetch Greeks + Summary + Trade via dxFeed WebSocket
+        # Batch into chunks to avoid oversized WS messages
+        CHUNK = 200
+        all_data = {"Greeks": {}, "Summary": {}, "Trade": {}}
+        streamer = _tt_get_streamer_token()
+
+        for i in range(0, len(dx_symbols), CHUNK):
+            chunk = dx_symbols[i:i+CHUNK]
+            subs  = [
+                {"type": "Greeks",  "symbol": chunk},
+                {"type": "Summary", "symbol": chunk},
+                {"type": "Trade",   "symbol": chunk},
+            ]
+            chunk_data = _dxfeed_fetch(streamer, subs, timeout=12)
+            for etype in ("Greeks", "Summary", "Trade"):
+                all_data[etype].update(chunk_data.get(etype, {}))
+
+        # Step 3: Assemble contracts
+        result = []
+        for dx_sym, meta in contracts_meta.items():
+            greeks_ev  = all_data["Greeks"].get(dx_sym,  {})
+            summary_ev = all_data["Summary"].get(dx_sym, {})
+            trade_ev   = all_data["Trade"].get(dx_sym,   {})
+
+            # Open interest: Summary.openInterest or Summary.dayOpenInterest
+            oi = 0
+            for field in ("openInterest", "dayOpenInterest"):
+                v = summary_ev.get(field)
+                if v is not None:
+                    try:
+                        oi = int(float(v))
+                        if oi > 0: break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Volume from Trade
+            vol = 0
+            tv = trade_ev.get("dayVolume")
+            if tv is not None:
+                try: vol = int(float(tv))
+                except (ValueError, TypeError): pass
+
+            gamma = None
+            delta = None
+            iv    = None
+            for field, target in (("gamma","gamma"), ("delta","delta"), ("volatility","iv")):
+                v = greeks_ev.get(field)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if target == "gamma": gamma = fv
+                        elif target == "delta": delta = fv
+                        elif target == "iv": iv = fv
+                    except (ValueError, TypeError):
+                        pass
+
+            result.append({
+                "strike":          meta["strike"],
+                "option_type":     meta["option_type"],
+                "expiration_date": meta["expiration_date"],
+                "contract_size":   meta["contract_size"],
+                "open_interest":   oi,
+                "volume":          vol,
+                "greeks": {
+                    "gamma":   gamma,
+                    "delta":   delta,
+                    "mid_iv":  iv,
+                },
+            })
+
+        filled = sum(1 for c in result if c["greeks"]["gamma"] is not None)
+        print(f"  [TT/chain] {sym} {expiry}: {len(result)} contracts, "
+              f"{filled} with greeks, total OI={sum(c['open_interest'] for c in result):,}")
+        return result
+
+    except Exception as e:
+        traceback.print_exc()
+        print(f"  [TT/chain] Exception for {sym} {expiry}: {e}")
+        return []
+
+
+# ── Tastytrade full fetch (spot + expirations + chains) ───────────
+
+def fetch_gex_tastytrade(ticker):
+    """
+    Full GEX data fetch using Tastytrade as the data source.
+    Returns the same structure as fetch_gex() so the rest of the pipeline
+    (compute_gex, key_levels, HTTP handler) works unchanged.
+    """
+    ticker = ticker.upper().strip()
+    t0     = time.time()
+    print(f"\n{'─'*55}")
+    print(f"[GammaEdge/TT] Fetching {ticker} via Tastytrade...")
+    print(f"{'─'*55}")
+
+    # Spot price
+    spot = get_spot_tastytrade(ticker)
+    if spot is None:
+        return {"error": f"[TT] Cannot fetch spot price for {ticker}"}
+    print(f"  Spot: ${spot:,.2f}")
+
+    # Expirations
+    exps = get_expirations_tastytrade(ticker)
+    if not exps and ticker == "SPX":
+        print("  [TT/exp] No SPX exps, trying SPXW...")
+        exps = get_expirations_tastytrade("SPXW")
+    if not exps:
+        return {"error": f"[TT] No expirations found for {ticker}"}
+    print(f"  Expirations: {len(exps)} -- first: {exps[0]}, last: {exps[-1]}")
+
+    exps = exps[:MAX_EXPIRIES]
+
+    # Option chains
+    all_contracts = []
+    syms = [ticker] + (["SPXW"] if ticker == "SPX" else [])
+    print(f"  Fetching chains for: {syms} x {len(exps)} expirations...")
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(get_chain_tastytrade, sym, exp): (sym, exp)
+                for sym in syms for exp in exps}
+        for f in as_completed(futs):
+            all_contracts.extend(f.result())
+
+    print(f"  Raw contracts returned: {len(all_contracts):,}")
+
+    if not all_contracts:
+        return {"error": "[TT] No option contracts returned from Tastytrade"}
+
+    # GEX computation (unchanged -- same contract format)
+    strikes = compute_gex(all_contracts, spot, ticker)
+    kl      = key_levels(strikes, spot)
+
+    # Summary by expiry
+    exp_summary = {}
+    for s in strikes:
+        for exp, gex in s["expirations"].items():
+            if exp not in exp_summary:
+                exp_summary[exp] = {"gex": 0, "dte": dte(exp)}
+            exp_summary[exp]["gex"] += gex
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"  Done in {elapsed}s -- {len(strikes)} strikes, "
+          f"call_wall={kl.get('call_wall')}, put_wall={kl.get('put_wall')}, "
+          f"total_gex={kl.get('total_gex')}")
+
+    return {
+        "ticker":      ticker,
+        "spot":        spot,
+        "strikes":     strikes,
+        "key_levels":  kl,
+        "expirations": {k: {"gex": round(v["gex"], 3), "dte": v["dte"]}
+                        for k, v in sorted(exp_summary.items())},
+        "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "elapsed":     elapsed,
+        "data_source": "tastytrade",
+    }
 
 
 # ── Black-Scholes gamma ──────────────────────────────────────────
@@ -253,7 +792,7 @@ def compute_gex(contracts, spot, ticker):
         gamma = abs(float(gamma))
         raw_gex = gamma * oi * (spot ** 2) * size / 1e9
 
-        # Index: dealers SHORT gamma on both calls and puts → negative GEX
+        # Index: dealers SHORT gamma on both calls and puts -> negative GEX
         # Equity/ETF: dealers long calls (positive), short puts (negative)
         if is_index:
             call_contrib = -raw_gex if otype == "call" else 0
@@ -355,16 +894,16 @@ def fetch_gex(token, ticker):
             exps = get_expirations(token, "SPXW")
         if not exps:
             return {"error": f"No expirations found for {ticker}"}
-        print(f"  Expirations: {len(exps)} — first: {exps[0]}, last: {exps[-1]}")
+        print(f"  Expirations: {len(exps)} -- first: {exps[0]}, last: {exps[-1]}")
     except Exception as e:
         return {"error": f"Expirations error: {e}"}
 
     exps = exps[:MAX_EXPIRIES]
 
-    # Option chains — fetch SPX + SPXW in parallel
+    # Option chains -- fetch SPX + SPXW in parallel
     all_contracts = []
     syms = [ticker] + (["SPXW"] if ticker == "SPX" else [])
-    print(f"  Fetching chains for: {syms} × {len(exps)} expirations...")
+    print(f"  Fetching chains for: {syms} x {len(exps)} expirations...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futs = {ex.submit(get_chain, token, sym, exp): (sym, exp)
                 for sym in syms for exp in exps}
@@ -374,7 +913,7 @@ def fetch_gex(token, ticker):
     print(f"  Raw contracts returned: {len(all_contracts):,}")
 
     if not all_contracts:
-        return {"error": "No option contracts returned — check Tradier token and market hours."}
+        return {"error": "No option contracts returned -- check Tradier token and market hours."}
 
     # GEX computation
     strikes = compute_gex(all_contracts, spot, ticker)
@@ -389,7 +928,7 @@ def fetch_gex(token, ticker):
             exp_summary[exp]["gex"] += gex
 
     elapsed = round(time.time() - t0, 1)
-    print(f"  Done in {elapsed}s — {len(strikes)} strikes, "
+    print(f"  Done in {elapsed}s -- {len(strikes)} strikes, "
           f"call_wall={kl.get('call_wall')}, put_wall={kl.get('put_wall')}, "
           f"total_gex={kl.get('total_gex')}")
 
@@ -402,7 +941,40 @@ def fetch_gex(token, ticker):
                         for k, v in sorted(exp_summary.items())},
         "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "elapsed":     elapsed,
+        "data_source": "tradier",
     }
+
+
+# ── Unified fetch with Tastytrade fallback ───────────────────────
+def fetch_gex_with_fallback(token, ticker):
+    """
+    Try Tradier first. If it fails for any reason (bad token, HTTP error,
+    empty result, exception), fall back to Tastytrade automatically.
+    """
+    tradier_ok = token is not None
+
+    if tradier_ok:
+        try:
+            result = fetch_gex(token, ticker)
+            # Treat any error dict that doesn't scream "no contracts" as Tradier working
+            if "error" not in result:
+                return result
+            print(f"\n[GammaEdge] Tradier returned error: {result['error']}")
+            print("[GammaEdge] Switching to Tastytrade fallback...\n")
+        except Exception as e:
+            print(f"\n[GammaEdge] Tradier fetch raised exception: {e}")
+            print("[GammaEdge] Switching to Tastytrade fallback...\n")
+    else:
+        print("[GammaEdge] No Tradier token -- using Tastytrade directly\n")
+
+    # Tastytrade fallback
+    try:
+        return fetch_gex_tastytrade(ticker)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[ERROR] Tastytrade fallback also failed:\n{tb}")
+        return {"error": f"Both Tradier and Tastytrade failed. Last error: {e}"}
+
 
 # ── Cache + HTTP server ──────────────────────────────────────────
 _cache = {}
@@ -416,10 +988,10 @@ def get_cached(token, ticker):
             if time.time() - ts < TTL:
                 return d
     try:
-        d = fetch_gex(token, ticker)
+        d = fetch_gex_with_fallback(token, ticker)
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[ERROR] fetch_gex crashed:\n{tb}")
+        print(f"[ERROR] fetch_gex_with_fallback crashed:\n{tb}")
         d = {"error": f"Internal error: {e}"}
     with _lock:
         _cache[ticker] = (d, time.time())
@@ -464,14 +1036,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'{"status":"ok"}')
         elif path == "/debug":
             result = {}
-            for sym in ["SPX", "$SPX.X", "SPY"]:
-                try:
-                    r = requests.get(f"{API_BASE}/markets/quotes",
-                        headers=_hdr(token),
-                        params={"symbols": sym, "greeks": "false"}, timeout=8)
-                    result[sym] = {"status": r.status_code, "body": r.json()}
-                except Exception as e:
-                    result[sym] = {"error": str(e)}
+            if token:
+                for sym in ["SPX", "$SPX.X", "SPY"]:
+                    try:
+                        r = requests.get(f"{API_BASE}/markets/quotes",
+                            headers=_hdr(token),
+                            params={"symbols": sym, "greeks": "false"}, timeout=8)
+                        result[sym] = {"status": r.status_code, "body": r.json()}
+                    except Exception as e:
+                        result[sym] = {"error": str(e)}
+            else:
+                result["tradier"] = "no token configured"
             self.wfile.write(json.dumps(result, indent=2).encode())
         else:
             self.wfile.write(b'{"error":"unknown endpoint"}')
@@ -487,8 +1062,10 @@ def run_server(token, ticker):
         httpd.token = token
         httpd.default_ticker = ticker
         sep = "=" * 55
+        src = "Tradier" if token else "Tastytrade (no Tradier token)"
         print(f"\n{sep}")
         print(f"  GammaEdge is RUNNING")
+        print(f"  Data source: {src} (Tastytrade fallback enabled)")
         print(f"  Dashboard: http://localhost:{PORT}/")
         print(f"  GEX API:   http://localhost:{PORT}/gex?ticker=SPX")
         print(f"  Health:    http://localhost:{PORT}/health")
@@ -499,6 +1076,7 @@ def run_server(token, ticker):
 if __name__ == "__main__":
     token  = get_token()
     ticker = get_default_ticker()
-    print(f"[GammaEdge] Token loaded, pre-loading {ticker}...")
+    src    = "Tradier" if token else "Tastytrade"
+    print(f"[GammaEdge] Starting with {src}, pre-loading {ticker}...")
     threading.Thread(target=get_cached, args=(token, ticker), daemon=True).start()
     run_server(token, ticker)
