@@ -46,6 +46,7 @@ TT_STREAMER_TTL    = 20 * 3600      # streamer token valid ~24h, cache 20h
 # ── Credentials ──────────────────────────────────────────────────
 def load_creds():
     creds = {}
+    # 1. Load from local credentials.env
     if os.path.exists(CREDS_FILE):
         with open(CREDS_FILE) as f:
             for line in f:
@@ -54,6 +55,18 @@ def load_creds():
                 if "=" in line:
                     k, v = line.split("=", 1)
                     creds[k.strip()] = v.strip()
+
+    # 2. Load from master trading_config.env (override if set)
+    master_env = os.path.join(os.path.expanduser("~"), "AppData", "Local", "trading_config.env")
+    if os.path.exists(master_env):
+        with open(master_env) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"): continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    creds[k.strip()] = v.strip()
+
     return creds
 
 def get_tastytrade_creds():
