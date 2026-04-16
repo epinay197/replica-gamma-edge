@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh --version)",
+      "Bash(git --version)",
+      "Bash(gh.exe --version)",
+      "Bash(git.exe --version)",
+      "Bash(python.exe --version)",
+      "Read(//usr/bin/**)",
+      "Bash(command -v gh)",
+      "Bash(git config:*)",
+      "Bash(echo $GITHUB_TOKEN)",
+      "Bash(env)",
+      "Bash(printf 'protocol=https\\\\nhost=github.com\\\\n')",
+      "Bash(git credential:*)",
+      "Bash(npm list:*)",
+      "Bash(npx --yes @railway/cli version)",
+      "Bash(npm.cmd --version)",
+      "Bash(node.exe --version)",
+      "Bash(python3 -c \"import urllib.request, json; r=urllib.request.urlopen\\(''https://api.github.com/repos/epinay197/replica-gamma-edge''\\); print\\(json.loads\\(r.read\\(\\)\\)[''html_url'']\\)\")",
+      "Bash(pip show:*)",
+      "Bash(curl -fsSL \"https://github.com/railwayapp/cli/releases/latest\" -I)",
+      "Bash(curl -s \"https://api.github.com/repos/railwayapp/cli/releases/latest\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(a[''''name''''],a[''''browser_download_url'''']\\) for a in d[''''assets'''']]\")",
+      "Bash(curl -fsSL \"https://github.com/railwayapp/cli/releases/download/v4.35.0/railway-v4.35.0-x86_64-unknown-linux-musl.tar.gz\" -o /tmp/railway.tar.gz)",
+      "Bash(tar -xzf /tmp/railway.tar.gz -C /tmp/)",
+      "Bash(chmod +x /tmp/railway)",
+      "Bash(/tmp/railway --version)",
+      "Bash(curl -fsSL \"https://github.com/railwayapp/cli/releases/download/v4.35.0/railway-v4.35.0-x86_64-pc-windows-gnu.zip\" -o /tmp/railway-win.zip)",
+      "Bash(unzip -o railway-win.zip -d railway-win)",
+      "Bash(./railway-win/railway.exe --version)",
+      "Read(//c/Users/Anwender/.railway/**)",
+      "Read(//c/Users/Anwender/Documents/Replica Gamma Edge/$APPDATA/railway/**)",
+      "Bash(grep -E \"\\\\.\\(json|py|js\\)$\")",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}

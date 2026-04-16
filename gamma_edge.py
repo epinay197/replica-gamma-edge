@@ -28,8 +28,7 @@ except ImportError:
 
 # ── Config ──────────────────────────────────────────────────────
 CREDS_FILE   = os.path.join(os.path.dirname(__file__), "credentials.env")
-API_BASE     = os.environ.get("TRADIER_API_BASE", "https://sandbox.tradier.com/v1")
-PORT         = int(os.environ.get("PORT", 5050))
+PORT         = int(os.environ.get("PORT", 8054))
 MAX_EXPIRIES = 20
 MAX_WORKERS  = 8
 INDEX_ROOTS  = {"SPX","SPXW","NDX","NDXW","VIX","RUT","RUTW","XSP","MXEA","MXEF"}
@@ -57,15 +56,16 @@ def load_creds():
                     creds[k.strip()] = v.strip()
     return creds
 
-def get_token():
-    # Check environment variable first (used in cloud deployment)
-    token = os.environ.get("TRADIER_TOKEN", "").strip()
-    if not token:
-        token = load_creds().get("TRADIER_TOKEN", "").strip()
-    if not token or token.startswith("YOUR_TOKEN"):
-        print("\n[WARN] No valid TRADIER_TOKEN found -- will rely on Tastytrade fallback.\n")
-        return None
-    return token
+def get_tastytrade_creds():
+    """Load Tastytrade credentials from env or credentials.env."""
+    creds = load_creds()
+    client_id = os.environ.get("TASTY_CLIENT_ID") or os.environ.get("TASTYTRADE_CLIENT_ID") or creds.get("TASTY_CLIENT_ID") or creds.get("TASTYTRADE_CLIENT_ID")
+    client_secret = os.environ.get("TASTY_CLIENT_SECRET") or os.environ.get("TASTYTRADE_CLIENT_SECRET") or creds.get("TASTY_CLIENT_SECRET") or creds.get("TASTYTRADE_CLIENT_SECRET")
+    refresh_token = os.environ.get("TASTY_REFRESH_TOKEN") or os.environ.get("TASTYTRADE_REFRESH_TOKEN") or creds.get("TASTY_REFRESH_TOKEN") or creds.get("TASTYTRADE_REFRESH_TOKEN")
+    if not (client_id and client_secret and refresh_token):
+        print("\n[ERROR] Tastytrade credentials not found in env or credentials.env\n")
+        return None, None, None
+    return client_id, client_secret, refresh_token
 
 def get_massive_key():
     """Load Massive API key from env vars or credentials.env."""
@@ -1347,9 +1347,12 @@ def run_server(token, ticker):
         httpd.serve_forever()
 
 if __name__ == "__main__":
-    token  = get_token()
+    tt_id, tt_secret, tt_refresh = get_tastytrade_creds()
+    if not tt_id:
+        print("[ERROR] Cannot start without Tastytrade credentials")
+        sys.exit(1)
     ticker = get_default_ticker()
-    src    = "Tradier" if token else "Tastytrade"
-    print(f"[GammaEdge] Starting with {src}, pre-loading {ticker}...")
-    threading.Thread(target=get_cached, args=(token, ticker), daemon=True).start()
-    run_server(token, ticker)
+    print(f"[GammaEdge] Starting with Tastytrade (PRIMARY source), pre-loading {ticker}...")
+    # Pass None for token (Tradier) since we're using Tastytrade
+    threading.Thread(target=get_cached, args=(None, ticker), daemon=True).start()
+    run_server(None, ticker)

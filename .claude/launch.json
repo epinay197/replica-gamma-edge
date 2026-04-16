@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "GammaEdge GEX Dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["gamma_edge.py"],
+      "port": 5050
+    }
+  ]
+}
